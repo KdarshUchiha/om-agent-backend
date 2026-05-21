@@ -29,7 +29,11 @@ class CoderAgent(BaseAgent):
         "   ```\n"
         "   If multiple files, repeat the pattern for each file.\n"
         "8. For games: implement smooth animation (requestAnimationFrame), keyboard "
-        "   controls, score tracking, and a proper game-over/restart flow."
+        "   controls, score tracking, and a proper game-over/restart flow.\n"
+        "9. NEVER use fake base64 image data or placeholder asset strings. "
+        "   Draw all graphics with Canvas 2D API (fillRect, arc, beginPath etc.) "
+        "   or pure CSS/SVG. No <img src='data:image/...'> with made-up content.\n"
+        "10. NEVER truncate the output. The file must be 100% complete and runnable as-is."
     )
 
     def _build_prompt(self, context: dict[str, Any]) -> str:
