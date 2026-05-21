@@ -117,10 +117,20 @@ class BaseAgent(ABC):
                     }
         except httpx.HTTPStatusError as exc:
             logger.error("%s HTTP error: %s", self.name, exc)
+            # exc.response.text may not be readable if we're outside the stream
+            # context — use the already-read error_body if available, else status only
+            error_body = getattr(exc.response, "_content", None)
+            if error_body:
+                try:
+                    error_body = error_body.decode("utf-8", errors="replace")[:300]
+                except Exception:
+                    error_body = str(exc.response.status_code)
+            else:
+                error_body = str(exc.response.status_code)
             yield {
                 "type": "error",
                 "agent": self.name,
-                "message": f"HTTP {exc.response.status_code}: {exc.response.text[:300]}",
+                "message": f"HTTP {exc.response.status_code}: {error_body}",
             }
             return
         except Exception as exc:  # noqa: BLE001
@@ -168,7 +178,9 @@ class BaseAgent(ABC):
 
         client = get_http_client()
         async with client.stream("POST", url, json=payload) as response:
-            response.raise_for_status()
+            if response.status_code != 200:
+                await response.aread()  # read body before leaving stream context
+                response.raise_for_status()
             async for line in response.aiter_lines():
                 line = line.strip()
                 if not line or not line.startswith("data:"):
@@ -217,7 +229,9 @@ class BaseAgent(ABC):
         async with client.stream(
             "POST", GROQ_CHAT_URL, headers=headers, json=payload
         ) as response:
-            response.raise_for_status()
+            if response.status_code != 200:
+                await response.aread()  # read body before leaving stream context
+                response.raise_for_status()
             async for line in response.aiter_lines():
                 line = line.strip()
                 if not line or not line.startswith("data:"):
