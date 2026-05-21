@@ -22,22 +22,21 @@ class ReviewerAgent(BaseAgent):
         "1. Fix ALL bugs — syntax errors, logic errors, off-by-one errors, missing event "
         "   listeners, uninitialized variables, broken game loops, etc.\n"
         "2. Ensure the code is COMPLETE — no missing sections, no placeholders.\n"
-        "3. Verify the designer's styles are properly integrated.\n"
+        "3. Integrate the designer's CSS into the final file.\n"
         "4. For games: confirm game loop, collision detection, score, and restart all work.\n"
-        "5. Clean up code quality: remove dead code, fix naming, add brief comments where "
-        "   useful for clarity.\n\n"
-        "OUTPUT FORMAT — you MUST output ONLY the following JSON, nothing else:\n"
-        "```json\n"
-        "{\n"
-        '  "files": [\n'
-        '    {"name": "index.html", "content": "...complete file content..."},\n'
-        '    {"name": "style.css", "content": "..."}  // only if separate CSS file\n'
-        "  ],\n"
-        '  "summary": "One or two sentences describing what was built and what was fixed."\n'
-        "}\n"
-        "```\n"
-        "The 'content' values must be the COMPLETE file contents, properly escaped for JSON. "
-        "Do not truncate. Do not add any text before or after the JSON block."
+        "5. For web apps: ensure all buttons, forms, and interactions work correctly.\n\n"
+        "OUTPUT FORMAT — output exactly this structure, nothing else:\n\n"
+        "SUMMARY: <one or two sentences describing what was built and what was fixed>\n\n"
+        "FILE: index.html\n"
+        "```html\n"
+        "<!DOCTYPE html>\n"
+        "...complete file content here, nothing truncated...\n"
+        "```\n\n"
+        "Rules:\n"
+        "- Output the COMPLETE file. Never truncate. Never write '...' or 'rest of code here'.\n"
+        "- If there are multiple files (e.g. separate CSS or JS), add more FILE: blocks.\n"
+        "- The code must run correctly when opened in a browser with zero modifications.\n"
+        "- Do NOT add any explanation before SUMMARY: or after the last ``` block."
     )
 
     async def run(
@@ -86,94 +85,77 @@ class ReviewerAgent(BaseAgent):
         self, raw: str, context: dict[str, Any]
     ) -> tuple[list[dict], str]:
         """
-        Extract the files list and summary from the reviewer's raw output.
-
-        Falls back gracefully: if JSON parsing fails, wraps the coder's output
-        as index.html so the user always gets something useful.
+        Parse the reviewer's structured output:
+          SUMMARY: <text>
+          FILE: <filename>
+          ```<lang>
+          <content>
+          ```
+        Falls back to coder output if parsing yields nothing.
         """
-        # Try to extract JSON from a ```json ... ``` fence first
-        json_text = self._extract_fenced_json(raw)
-        if json_text is None:
-            # Try to find a bare JSON object
-            json_text = self._extract_bare_json(raw)
+        # Extract summary
+        summary = "Project completed successfully."
+        summary_match = re.search(r"SUMMARY:\s*(.+?)(?:\n|$)", raw)
+        if summary_match:
+            summary = summary_match.group(1).strip()
 
-        if json_text:
-            try:
-                data = json.loads(json_text)
-                files = data.get("files", [])
-                summary = data.get("summary", "Project completed successfully.")
-                if files:
-                    return files, summary
-            except (json.JSONDecodeError, ValueError) as exc:
-                logger.warning("Reviewer JSON parse failed: %s", exc)
-
-        # Fallback: use the coder's output
-        logger.warning("Reviewer did not return valid JSON — falling back to coder output")
-        coder_output = context.get("coder_output", "")
-        fallback_files = self._extract_files_from_coder(coder_output)
-        if not fallback_files:
-            # Last resort: wrap everything in a single HTML file
-            fallback_files = [{"name": "index.html", "content": coder_output or raw}]
-
-        return fallback_files, "Project generated. Please review the output."
-
-    @staticmethod
-    def _extract_fenced_json(text: str) -> str | None:
-        """Extract content from ```json ... ``` fences."""
-        pattern = r"```json\s*([\s\S]*?)```"
-        match = re.search(pattern, text, re.IGNORECASE)
-        return match.group(1).strip() if match else None
-
-    @staticmethod
-    def _extract_bare_json(text: str) -> str | None:
-        """Find the first { ... } block that looks like our output schema."""
-        start = text.find('{"files"')
-        if start == -1:
-            start = text.find('{ "files"')
-        if start == -1:
-            return None
-        # Walk forward to find the matching closing brace
-        depth = 0
-        for i, ch in enumerate(text[start:], start):
-            if ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    return text[start : i + 1]
-        return None
-
-    @staticmethod
-    def _extract_files_from_coder(coder_output: str) -> list[dict]:
-        """
-        Parse fenced code blocks from the coder's output into files.
-
-        Expects blocks like:
-            ```html index.html
-            ...
-            ```
-        """
+        # Extract FILE: <name> + fenced block pairs
         files: list[dict] = []
-        # Match ```<lang> <filename>\n<content>\n```
-        pattern = r"```(?:\w+)?\s+([\w.\-/]+)\n([\s\S]*?)```"
-        for match in re.finditer(pattern, coder_output):
-            filename = match.group(1).strip()
+        # Pattern: FILE: filename\n```lang\n<content>\n```
+        file_pattern = re.compile(
+            r"FILE:\s*([\w.\-/]+)\s*\n```[^\n]*\n([\s\S]*?)```",
+            re.MULTILINE,
+        )
+        for match in file_pattern.finditer(raw):
+            name = match.group(1).strip()
             content = match.group(2)
-            files.append({"name": filename, "content": content})
+            if content.strip():
+                files.append({"name": name, "content": content})
+                logger.info("Parsed file from reviewer: %s (%d chars)", name, len(content))
 
-        if not files:
-            # Try without filename label: ```html\n...\n```
-            pattern2 = r"```(?:html|css|javascript|js)\n([\s\S]*?)```"
-            extensions = {"html": "index.html", "css": "style.css", "javascript": "script.js", "js": "script.js"}
-            seen: set[str] = set()
-            for match in re.finditer(pattern2, coder_output, re.IGNORECASE):
-                lang_match = re.match(r"```(\w+)", coder_output[match.start():])
-                lang = lang_match.group(1).lower() if lang_match else "html"
-                name = extensions.get(lang, f"{lang}.txt")
-                # Avoid duplicates
-                if name in seen:
-                    name = f"{lang}_{len(seen)}.{lang}"
-                seen.add(name)
-                files.append({"name": name, "content": match.group(1)})
+        if files:
+            return files, summary
 
+        # Fallback 1: any fenced code block in reviewer output
+        logger.warning("FILE: pattern not found — trying bare fenced blocks in reviewer output")
+        files = self._extract_fenced_blocks(raw)
+        if files:
+            return files, summary
+
+        # Fallback 2: fenced blocks from coder output
+        logger.warning("Falling back to coder output")
+        coder_output = context.get("coder_output", "")
+        files = self._extract_fenced_blocks(coder_output)
+        if files:
+            return files, "Project generated from coder output."
+
+        # Last resort: wrap raw coder output as index.html
+        logger.warning("Last resort — wrapping coder output as index.html")
+        content = coder_output.strip() or raw.strip()
+        return [{"name": "index.html", "content": content}], summary
+
+    @staticmethod
+    def _extract_fenced_blocks(text: str) -> list[dict]:
+        """Extract fenced code blocks, guessing filenames from language."""
+        ext_map = {
+            "html": "index.html",
+            "css": "style.css",
+            "javascript": "script.js",
+            "js": "script.js",
+            "python": "main.py",
+            "py": "main.py",
+        }
+        files: list[dict] = []
+        seen: dict[str, int] = {}
+        pattern = re.compile(r"```(\w+)?\n([\s\S]*?)```", re.MULTILINE)
+        for match in pattern.finditer(text):
+            lang = (match.group(1) or "html").lower()
+            content = match.group(2)
+            if not content.strip():
+                continue
+            base_name = ext_map.get(lang, f"file.{lang}")
+            count = seen.get(base_name, 0)
+            name = base_name if count == 0 else f"{base_name.rsplit('.', 1)[0]}_{count}.{base_name.rsplit('.', 1)[-1]}"
+            seen[base_name] = count + 1
+            files.append({"name": name, "content": content})
         return files

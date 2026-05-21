@@ -162,7 +162,7 @@ class BaseAgent(ABC):
             ],
             "generationConfig": {
                 "temperature": 0.7,
-                "maxOutputTokens": 8192,
+                "maxOutputTokens": 65536,
             },
         }
 
@@ -210,7 +210,7 @@ class BaseAgent(ABC):
             ],
             "stream": True,
             "temperature": 0.7,
-            "max_tokens": 8192,
+            "max_tokens": 32768,
         }
 
         client = get_http_client()
