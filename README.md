@@ -1,3 +1,12 @@
+---
+title: Om Agent Backend
+emoji: ☁️
+colorFrom: blue
+colorTo: purple
+sdk: docker
+pinned: false
+---
+
 # Om Agent Backend
 
 Multi-agent AI orchestration system built with FastAPI. Send a single prompt and watch 5 specialized AI agents collaborate to build your project — streamed live to the browser via Server-Sent Events.
