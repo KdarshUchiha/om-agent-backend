@@ -68,14 +68,20 @@ class ReviewerAgent(BaseAgent):
     def _build_prompt(self, context: dict[str, Any]) -> str:
         user_prompt = context.get("user_prompt", "")
         coder_output = context.get("coder_output", "")
-        architect_plan = context.get("architect_output", "")
+        architect_plan = self._trim(context.get("architect_output", ""), 2000)
 
         return (
             f"Original user request: {user_prompt}\n\n"
             f"## Architect's Plan (for reference)\n{architect_plan}\n\n"
             f"## Coder's Output (to review and finalize)\n{coder_output}\n\n"
-            "Please review, fix any issues, and output the final JSON as specified."
+            "Please review, fix any issues, and output the final files as specified."
         )
+
+    @staticmethod
+    def _trim(text: str, max_chars: int) -> str:
+        if len(text) <= max_chars:
+            return text
+        return text[:max_chars] + "\n\n[...trimmed for brevity...]"
 
     # ------------------------------------------------------------------
     # Output parsing

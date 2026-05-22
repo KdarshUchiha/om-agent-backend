@@ -148,6 +148,11 @@ class BaseAgent(ABC):
                         f"after {MAX_RETRIES} retries. "
                         "Please wait a minute and try again, or switch to Groq in ⚙️ Settings."
                     )
+                elif status == 413:
+                    msg = (
+                        "Request too large for Groq free tier (12K tokens/min). "
+                        "Try a simpler prompt, or switch to Gemini in ⚙️ Settings."
+                    )
                 elif status == 401 or status == 403:
                     msg = "Invalid API key. Check your key in ⚙️ Settings."
                 else:
@@ -262,7 +267,7 @@ class BaseAgent(ABC):
             ],
             "stream": True,
             "temperature": 0.7,
-            "max_tokens": 32768,
+            "max_tokens": 8192,
         }
 
         client = get_http_client()

@@ -38,10 +38,10 @@ class CoderAgent(BaseAgent):
 
     def _build_prompt(self, context: dict[str, Any]) -> str:
         user_prompt = context.get("user_prompt", "")
-        task_brief = context.get("orchestrator_output", "")
-        architect_plan = context.get("architect_output", "")
-        designer_css = context.get("designer_output", "")
-        assets = context.get("asset_artist_output", "")
+        task_brief = self._trim(context.get("orchestrator_output", ""), 1500)
+        architect_plan = self._trim(context.get("architect_output", ""), 3000)
+        designer_css = self._trim(context.get("designer_output", ""), 2000)
+        assets = self._trim(context.get("asset_artist_output", ""), 3000)
 
         prompt = (
             f"Original user request: {user_prompt}\n\n"
@@ -65,3 +65,9 @@ class CoderAgent(BaseAgent):
             "Remember: every line must be real, working code."
         )
         return prompt
+
+    @staticmethod
+    def _trim(text: str, max_chars: int) -> str:
+        if len(text) <= max_chars:
+            return text
+        return text[:max_chars] + "\n\n[...trimmed for brevity...]"
