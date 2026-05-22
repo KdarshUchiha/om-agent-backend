@@ -41,12 +41,27 @@ class CoderAgent(BaseAgent):
         task_brief = context.get("orchestrator_output", "")
         architect_plan = context.get("architect_output", "")
         designer_css = context.get("designer_output", "")
+        assets = context.get("asset_artist_output", "")
 
-        return (
+        prompt = (
             f"Original user request: {user_prompt}\n\n"
             f"## Orchestrator Task Brief\n{task_brief}\n\n"
             f"## Architect's Technical Plan\n{architect_plan}\n\n"
             f"## Designer's CSS & Styles\n{designer_css}\n\n"
+        )
+
+        if assets:
+            prompt += (
+                f"## Asset Artist's SVG Sprites & Graphics\n{assets}\n\n"
+                "IMPORTANT: Use the SVG assets above as inline data URIs for <img> tags or "
+                "draw them onto the Canvas. Embed each SVG as:\n"
+                "  const spriteUrl = `data:image/svg+xml,${encodeURIComponent(svgString)}`;\n"
+                "  or use new Image() with src set to the data URI.\n"
+                "Use EVERY asset the artist created — they are designed for this project.\n\n"
+            )
+
+        prompt += (
             "Now write the complete, production-ready code for this project. "
             "Remember: every line must be real, working code."
         )
+        return prompt

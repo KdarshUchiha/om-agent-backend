@@ -1,19 +1,19 @@
 """
-Pipeline orchestration — runs all five agents in the correct order,
+Pipeline orchestration — runs all six agents in the correct order,
 wires their outputs into a shared context dict, and yields SSE event dicts
 for the FastAPI endpoint to forward to the browser.
 
 Flow:
   Orchestrator
       ↓
-  Architect ──── (parallel) ──── Designer
-      └──────────────┬──────────────┘
-                     ↓
-                  Coder
-                     ↓
-                  Reviewer
-                     ↓
-              final_output / done
+  Architect ──── (parallel) ──── Designer ──── (parallel) ──── Asset Artist
+      └─────────────────────────────┬──────────────────────────────┘
+                                    ↓
+                                  Coder
+                                    ↓
+                                 Reviewer
+                                    ↓
+                            final_output / done
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ import logging
 from typing import Any, AsyncGenerator
 
 from .architect import ArchitectAgent
+from .asset_artist import AssetArtistAgent
 from .coder import CoderAgent
 from .designer import DesignerAgent
 from .orchestrator import OrchestratorAgent
@@ -53,6 +54,7 @@ async def run_pipeline(
     orchestrator = OrchestratorAgent()
     architect = ArchitectAgent()
     designer = DesignerAgent()
+    asset_artist = AssetArtistAgent()
     coder = CoderAgent()
     reviewer = ReviewerAgent()
 
@@ -75,21 +77,22 @@ async def run_pipeline(
     context["orchestrator_output"] = orchestrator_text
 
     # ------------------------------------------------------------------
-    # 2. Architect + Designer in parallel
+    # 2. Architect + Designer + Asset Artist in parallel
     # ------------------------------------------------------------------
     yield {
         "type": "agent_thinking",
-        "agent": "Architect & Designer",
+        "agent": "Architect & Designer & Asset Artist",
         "emoji": "⚡",
-        "message": "Architect and Designer are working in parallel…",
+        "message": "Architect, Designer, and Asset Artist working in parallel…",
     }
 
     architect_text = ""
     designer_text = ""
+    asset_artist_text = ""
 
-    # Run both agents concurrently, merging their event streams in arrival order.
     architect_events: list[dict] = []
     designer_events: list[dict] = []
+    asset_artist_events: list[dict] = []
 
     async def _collect(agent_gen: AsyncGenerator[dict, None], out: list[dict]) -> None:
         async for ev in agent_gen:
@@ -98,9 +101,10 @@ async def run_pipeline(
     await asyncio.gather(
         _collect(architect.run(context, api_key, provider), architect_events),
         _collect(designer.run(context, api_key, provider), designer_events),
+        _collect(asset_artist.run(context, api_key, provider), asset_artist_events),
     )
 
-    # Emit architect events first, then designer (both are already complete)
+    # Emit events in order: architect → designer → asset artist
     for event in architect_events:
         if event.get("type") == "agent_done":
             architect_text = event.pop("_full_text", "")
@@ -111,8 +115,14 @@ async def run_pipeline(
             designer_text = event.pop("_full_text", "")
         yield event
 
+    for event in asset_artist_events:
+        if event.get("type") == "agent_done":
+            asset_artist_text = event.pop("_full_text", "")
+        yield event
+
     context["architect_output"] = architect_text
     context["designer_output"] = designer_text
+    context["asset_artist_output"] = asset_artist_text
 
     # ------------------------------------------------------------------
     # 3. Coder
@@ -121,7 +131,7 @@ async def run_pipeline(
         "type": "agent_thinking",
         "agent": coder.name,
         "emoji": coder.emoji,
-        "message": "Writing the complete code based on the plan and design…",
+        "message": "Writing complete code with assets, design, and architecture…",
     }
 
     coder_text = ""
