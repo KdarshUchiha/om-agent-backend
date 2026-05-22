@@ -120,19 +120,19 @@ class BaseAgent(ABC):
                 except Exception:
                     error_body = ""
 
-                if status == 429 and attempt < MAX_RETRIES:
-                    # Parse retry-after from header or body, else use exponential backoff
+                if status in (429, 503) and attempt < MAX_RETRIES:
                     retry_after = self._parse_retry_after(exc.response, error_body, attempt)
+                    reason = "Rate limit hit" if status == 429 else "Server busy"
                     logger.warning(
-                        "%s rate-limited (429). Retrying in %ds (attempt %d/%d)",
-                        self.name, retry_after, attempt + 1, MAX_RETRIES,
+                        "%s %s (%d). Retrying in %ds (attempt %d/%d)",
+                        self.name, reason, status, retry_after, attempt + 1, MAX_RETRIES,
                     )
                     yield {
                         "type": "agent_thinking",
                         "agent": self.name,
                         "emoji": self.emoji,
                         "message": (
-                            f"⏳ Rate limit hit — waiting {retry_after}s then retrying "
+                            f"⏳ {reason} — waiting {retry_after}s then retrying "
                             f"(attempt {attempt + 1}/{MAX_RETRIES})…"
                         ),
                     }
@@ -140,11 +140,12 @@ class BaseAgent(ABC):
                     attempt += 1
                     continue
 
-                # Non-429 or out of retries
+                # Non-retryable or out of retries
                 short_body = error_body[:300] if error_body else str(status)
-                if status == 429:
+                if status in (429, 503):
                     msg = (
-                        f"Rate limit exceeded after {MAX_RETRIES} retries. "
+                        f"{'Rate limit' if status == 429 else 'Server overloaded'} "
+                        f"after {MAX_RETRIES} retries. "
                         "Please wait a minute and try again, or switch to Groq in ⚙️ Settings."
                     )
                 elif status == 401 or status == 403:
