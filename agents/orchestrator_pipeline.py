@@ -98,20 +98,10 @@ async def run_pipeline(
         async for ev in agent_gen:
             out.append(ev)
 
-    async def _delayed_collect(
-        agent_gen: AsyncGenerator[dict, None], out: list[dict], delay: float
-    ) -> None:
-        """Stagger start to avoid simultaneous API hits on free-tier providers."""
-        if delay > 0:
-            await asyncio.sleep(delay)
-        async for ev in agent_gen:
-            out.append(ev)
-
-    # Stagger by 3s each to avoid 503 "high demand" on Gemini free tier
     await asyncio.gather(
-        _delayed_collect(architect.run(context, api_key, provider), architect_events, 0),
-        _delayed_collect(designer.run(context, api_key, provider), designer_events, 3),
-        _delayed_collect(asset_artist.run(context, api_key, provider), asset_artist_events, 6),
+        _collect(architect.run(context, api_key, provider), architect_events),
+        _collect(designer.run(context, api_key, provider), designer_events),
+        _collect(asset_artist.run(context, api_key, provider), asset_artist_events),
     )
 
     # Emit events in order: architect → designer → asset artist
