@@ -159,3 +159,85 @@ async def run_pipeline(
     # 5. Done
     # ------------------------------------------------------------------
     yield {"type": "done"}
+
+
+async def run_refine_pipeline(
+    refinement_prompt: str,
+    current_files: list[dict],
+    conversation: list[dict],
+    api_key: str,
+    provider: str,
+) -> AsyncGenerator[dict, None]:
+    """
+    Refine an existing project — only runs Coder + Reviewer.
+    Takes current files and a refinement instruction, produces updated files.
+    """
+    coder = CoderAgent()
+    reviewer = ReviewerAgent()
+
+    # Build context with existing files + conversation history
+    files_text = ""
+    for f in current_files:
+        name = f.get("name", "file")
+        content = f.get("content", "")
+        # Trim each file for token budget
+        trimmed = content[:6000] + ("\n...[trimmed]..." if len(content) > 6000 else "")
+        files_text += f"\n### {name}\n```\n{trimmed}\n```\n"
+
+    conv_text = ""
+    if conversation:
+        for turn in conversation[-6:]:  # last 6 turns max
+            role = turn.get("role", "user")
+            msg = turn.get("content", "")[:500]
+            conv_text += f"\n{role}: {msg}\n"
+
+    context: dict[str, Any] = {
+        "user_prompt": refinement_prompt,
+        "mode": "refine",
+        "orchestrator_output": (
+            f"This is a REFINEMENT of an existing project.\n"
+            f"The user wants to modify/improve their current code.\n\n"
+            f"## User's Refinement Request\n{refinement_prompt}\n\n"
+            f"## Conversation Context\n{conv_text}\n"
+        ),
+        "architect_output": f"## Current Project Files\n{files_text}",
+        "designer_output": "",
+        "asset_artist_output": "",
+    }
+
+    # ------------------------------------------------------------------
+    # 1. Coder (applies the refinement)
+    # ------------------------------------------------------------------
+    yield {
+        "type": "agent_start",
+        "agent": "Refiner",
+        "emoji": "🔧",
+        "message": "Applying your changes…",
+    }
+
+    coder_text = ""
+    async for event in coder.run(context, api_key, provider):
+        # Rebrand coder as "Refiner" for the UI
+        if "agent" in event:
+            event["agent"] = "Refiner"
+            event["emoji"] = "🔧"
+        if event.get("type") == "agent_done":
+            coder_text = event.pop("_full_text", "")
+        yield event
+
+    context["coder_output"] = coder_text
+
+    # ------------------------------------------------------------------
+    # 2. Reviewer (produces final output)
+    # ------------------------------------------------------------------
+    yield {
+        "type": "agent_thinking",
+        "agent": reviewer.name,
+        "emoji": reviewer.emoji,
+        "message": "Reviewing refined code…",
+    }
+
+    async for event in reviewer.run(context, api_key, provider):
+        yield event
+
+    yield {"type": "done"}

@@ -19,6 +19,21 @@ class AgentRunRequest(BaseModel):
     )
 
 
+class AgentRefineRequest(BaseModel):
+    """Request body for the /agent/refine endpoint."""
+
+    prompt: str = Field(..., description="Refinement instruction from the user")
+    provider: Literal["gemini", "groq"] = Field(default="gemini")
+    api_key: str = Field(..., description="API key for the selected provider")
+    files: list[dict[str, Any]] = Field(
+        ..., description="Current project files: [{name, content}, ...]"
+    )
+    conversation: list[dict[str, str]] = Field(
+        default_factory=list,
+        description="Prior conversation turns: [{role, content}, ...]",
+    )
+
+
 class OutputFile(BaseModel):
     """A single output file produced by the agent pipeline."""
 

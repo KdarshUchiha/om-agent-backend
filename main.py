@@ -18,8 +18,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from agents.base import get_http_client
-from agents.orchestrator_pipeline import run_pipeline
-from models.schemas import AgentRunRequest, HealthResponse
+from agents.orchestrator_pipeline import run_pipeline, run_refine_pipeline
+from models.schemas import AgentRefineRequest, AgentRunRequest, HealthResponse
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -128,6 +128,38 @@ async def agent_run(request: AgentRunRequest) -> StreamingResponse:
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
         },
+    )
+
+
+@app.post("/agent/refine", tags=["Agent"])
+async def agent_refine(request: AgentRefineRequest) -> StreamingResponse:
+    """
+    Refine an existing project. Takes current files + a refinement instruction,
+    runs only Coder + Reviewer to apply the changes.
+    """
+    if not request.api_key or request.api_key.strip() == "":
+        raise HTTPException(status_code=400, detail="api_key is required.")
+
+    async def event_stream():
+        try:
+            async for event in run_refine_pipeline(
+                refinement_prompt=request.prompt,
+                current_files=request.files,
+                conversation=request.conversation,
+                api_key=request.api_key.strip(),
+                provider=request.provider,
+            ):
+                event.pop("_full_text", None)
+                yield f"data: {json.dumps(event)}\n\n"
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Unhandled error in refine stream")
+            yield f'data: {json.dumps({"type": "error", "agent": "Pipeline", "message": str(exc)})}\n\n'
+            yield 'data: {"type": "done"}\n\n'
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
 
 
