@@ -169,75 +169,41 @@ async def run_refine_pipeline(
     provider: str,
 ) -> AsyncGenerator[dict, None]:
     """
-    Refine an existing project — only runs Coder + Reviewer.
-    Takes current files and a refinement instruction, produces updated files.
+    Refine an existing project — runs ALL 6 agents, same as a full build,
+    but each agent receives the existing project files + conversation as context.
+    They can edit or completely rewrite as needed.
     """
-    coder = CoderAgent()
-    reviewer = ReviewerAgent()
-
-    # Build context with existing files + conversation history
+    # Build existing project context
     files_text = ""
     for f in current_files:
         name = f.get("name", "file")
         content = f.get("content", "")
-        # Trim each file for token budget
-        trimmed = content[:6000] + ("\n...[trimmed]..." if len(content) > 6000 else "")
+        trimmed = content[:4000] + ("\n...[trimmed]..." if len(content) > 4000 else "")
         files_text += f"\n### {name}\n```\n{trimmed}\n```\n"
 
     conv_text = ""
     if conversation:
-        for turn in conversation[-6:]:  # last 6 turns max
+        for turn in conversation[-8:]:
             role = turn.get("role", "user")
-            msg = turn.get("content", "")[:500]
+            msg = turn.get("content", "")[:300]
             conv_text += f"\n{role}: {msg}\n"
 
-    context: dict[str, Any] = {
-        "user_prompt": refinement_prompt,
-        "mode": "refine",
-        "orchestrator_output": (
-            f"This is a REFINEMENT of an existing project.\n"
-            f"The user wants to modify/improve their current code.\n\n"
-            f"## User's Refinement Request\n{refinement_prompt}\n\n"
-            f"## Conversation Context\n{conv_text}\n"
-        ),
-        "architect_output": f"## Current Project Files\n{files_text}",
-        "designer_output": "",
-        "asset_artist_output": "",
-    }
+    # Augment the user prompt with existing context
+    augmented_prompt = (
+        f"{refinement_prompt}\n\n"
+        f"---\n"
+        f"CONTEXT: This is a refinement of an existing project. "
+        f"The current project files are provided below. "
+        f"You may EDIT specific parts or REWRITE entirely based on the user's request.\n\n"
+        f"## Previous Conversation\n{conv_text}\n\n"
+        f"## Current Project Files\n{files_text}"
+    )
 
-    # ------------------------------------------------------------------
-    # 1. Coder (applies the refinement)
-    # ------------------------------------------------------------------
-    yield {
-        "type": "agent_start",
-        "agent": "Refiner",
-        "emoji": "🔧",
-        "message": "Applying your changes…",
-    }
-
-    coder_text = ""
-    async for event in coder.run(context, api_key, provider):
-        # Rebrand coder as "Refiner" for the UI
-        if "agent" in event:
-            event["agent"] = "Refiner"
-            event["emoji"] = "🔧"
-        if event.get("type") == "agent_done":
-            coder_text = event.pop("_full_text", "")
+    # Run the full 6-agent pipeline with the augmented prompt
+    async for event in run_pipeline(
+        user_prompt=augmented_prompt,
+        api_key=api_key,
+        provider=provider,
+        mode="refine",
+    ):
         yield event
-
-    context["coder_output"] = coder_text
-
-    # ------------------------------------------------------------------
-    # 2. Reviewer (produces final output)
-    # ------------------------------------------------------------------
-    yield {
-        "type": "agent_thinking",
-        "agent": reviewer.name,
-        "emoji": reviewer.emoji,
-        "message": "Reviewing refined code…",
-    }
-
-    async for event in reviewer.run(context, api_key, provider):
-        yield event
-
-    yield {"type": "done"}
