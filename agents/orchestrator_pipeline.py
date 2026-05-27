@@ -161,6 +161,19 @@ async def run_pipeline(
     yield {"type": "done"}
 
 
+def _is_bug_report(prompt: str) -> bool:
+    """Detect if the user is reporting a bug vs requesting a feature."""
+    bug_keywords = [
+        "broken", "doesn't work", "not working", "crash", "error", "bug",
+        "fix", "issue", "wrong", "fails", "stuck", "freezes", "blank",
+        "nothing happens", "can't", "won't", "undefined", "null",
+        "NaN", "infinite loop", "doesn't load", "white screen",
+        "console error", "black screen", "no response", "glitch",
+    ]
+    prompt_lower = prompt.lower()
+    return any(kw in prompt_lower for kw in bug_keywords)
+
+
 async def run_refine_pipeline(
     refinement_prompt: str,
     current_files: list[dict],
@@ -169,41 +182,120 @@ async def run_refine_pipeline(
     provider: str,
 ) -> AsyncGenerator[dict, None]:
     """
-    Refine an existing project — runs ALL 6 agents, same as a full build,
-    but each agent receives the existing project files + conversation as context.
-    They can edit or completely rewrite as needed.
+    Smart refine pipeline:
+    - If user reports a BUG: Debugger diagnoses → Coder fixes → Reviewer validates
+    - If user requests a FEATURE: Full 6-agent pipeline with context
     """
-    # Build existing project context
-    files_text = ""
-    for f in current_files:
-        name = f.get("name", "file")
-        content = f.get("content", "")
-        trimmed = content[:4000] + ("\n...[trimmed]..." if len(content) > 4000 else "")
-        files_text += f"\n### {name}\n```\n{trimmed}\n```\n"
+    from .debugger import DebuggerAgent
 
-    conv_text = ""
-    if conversation:
-        for turn in conversation[-8:]:
-            role = turn.get("role", "user")
-            msg = turn.get("content", "")[:300]
-            conv_text += f"\n{role}: {msg}\n"
+    is_bug = _is_bug_report(refinement_prompt)
 
-    # Augment the user prompt with existing context
-    augmented_prompt = (
-        f"{refinement_prompt}\n\n"
-        f"---\n"
-        f"CONTEXT: This is a refinement of an existing project. "
-        f"The current project files are provided below. "
-        f"You may EDIT specific parts or REWRITE entirely based on the user's request.\n\n"
-        f"## Previous Conversation\n{conv_text}\n\n"
-        f"## Current Project Files\n{files_text}"
-    )
+    if is_bug:
+        # BUG FIX FLOW: Debugger → Coder → Reviewer
+        yield {
+            "type": "agent_thinking",
+            "agent": "Pipeline",
+            "emoji": "🔍",
+            "message": "Bug detected — running diagnostic first…",
+        }
 
-    # Run the full 6-agent pipeline with the augmented prompt
-    async for event in run_pipeline(
-        user_prompt=augmented_prompt,
-        api_key=api_key,
-        provider=provider,
-        mode="refine",
-    ):
-        yield event
+        debugger = DebuggerAgent()
+        coder = CoderAgent()
+        reviewer = ReviewerAgent()
+
+        # Step 1: Debugger analyzes the issue
+        debug_context: dict[str, Any] = {
+            "user_prompt": refinement_prompt,
+            "current_files": current_files,
+            "conversation": conversation,
+        }
+
+        debugger_text = ""
+        async for event in debugger.run(debug_context, api_key, provider):
+            if event.get("type") == "agent_done":
+                debugger_text = event.pop("_full_text", "")
+            yield event
+
+        # Step 2: Coder applies the fix (with debugger's diagnosis as context)
+        files_text = ""
+        for f in current_files:
+            name = f.get("name", "file")
+            content = f.get("content", "")
+            trimmed = content[:6000] + ("\n...[trimmed]..." if len(content) > 6000 else "")
+            files_text += f"\n### {name}\n```\n{trimmed}\n```\n"
+
+        coder_context: dict[str, Any] = {
+            "user_prompt": refinement_prompt,
+            "mode": "bugfix",
+            "orchestrator_output": (
+                f"This is a BUG FIX. The debugger has identified the issue.\n\n"
+                f"## Debugger's Diagnosis\n{debugger_text}\n\n"
+                f"## User's Bug Report\n{refinement_prompt}\n\n"
+                f"Apply the fix described by the debugger. Output the complete corrected file(s)."
+            ),
+            "architect_output": f"## Current Project Files\n{files_text}",
+            "designer_output": "",
+            "asset_artist_output": "",
+        }
+
+        yield {
+            "type": "agent_thinking",
+            "agent": coder.name,
+            "emoji": coder.emoji,
+            "message": "Applying the fix…",
+        }
+
+        coder_text = ""
+        async for event in coder.run(coder_context, api_key, provider):
+            if event.get("type") == "agent_done":
+                coder_text = event.pop("_full_text", "")
+            yield event
+
+        coder_context["coder_output"] = coder_text
+
+        # Step 3: Reviewer validates the fix
+        yield {
+            "type": "agent_thinking",
+            "agent": reviewer.name,
+            "emoji": reviewer.emoji,
+            "message": "Verifying the fix…",
+        }
+
+        async for event in reviewer.run(coder_context, api_key, provider):
+            yield event
+
+        yield {"type": "done"}
+
+    else:
+        # FEATURE REQUEST FLOW: Full 6-agent pipeline with context
+        files_text = ""
+        for f in current_files:
+            name = f.get("name", "file")
+            content = f.get("content", "")
+            trimmed = content[:4000] + ("\n...[trimmed]..." if len(content) > 4000 else "")
+            files_text += f"\n### {name}\n```\n{trimmed}\n```\n"
+
+        conv_text = ""
+        if conversation:
+            for turn in conversation[-8:]:
+                role = turn.get("role", "user")
+                msg = turn.get("content", "")[:300]
+                conv_text += f"\n{role}: {msg}\n"
+
+        augmented_prompt = (
+            f"{refinement_prompt}\n\n"
+            f"---\n"
+            f"CONTEXT: This is a refinement of an existing project. "
+            f"The current project files are provided below. "
+            f"You may EDIT specific parts or REWRITE entirely based on the user's request.\n\n"
+            f"## Previous Conversation\n{conv_text}\n\n"
+            f"## Current Project Files\n{files_text}"
+        )
+
+        async for event in run_pipeline(
+            user_prompt=augmented_prompt,
+            api_key=api_key,
+            provider=provider,
+            mode="refine",
+        ):
+            yield event
