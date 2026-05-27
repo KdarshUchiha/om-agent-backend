@@ -34,6 +34,31 @@ class AgentRefineRequest(BaseModel):
     )
 
 
+class WorkspaceFile(BaseModel):
+    name: str
+    content: str
+
+
+class AgentChatRequest(BaseModel):
+    """Request body for the /agent/chat endpoint — unified workspace conversation."""
+
+    message: str = Field(..., description="User's message")
+    provider: Literal["gemini", "groq"] = Field(default="gemini")
+    api_key: str = Field(..., description="API key for the selected provider")
+    files: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Current project files (empty for first message)",
+    )
+    history: list[dict[str, str]] = Field(
+        default_factory=list,
+        description="Full conversation history: [{role, content}, ...]",
+    )
+    conversation: list[dict[str, str]] = Field(
+        default_factory=list,
+        description="Prior conversation turns: [{role, content}, ...]",
+    )
+
+
 class OutputFile(BaseModel):
     """A single output file produced by the agent pipeline."""
 

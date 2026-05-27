@@ -19,7 +19,8 @@ from fastapi.responses import StreamingResponse
 
 from agents.base import get_http_client
 from agents.orchestrator_pipeline import run_pipeline, run_refine_pipeline
-from models.schemas import AgentRefineRequest, AgentRunRequest, HealthResponse
+from agents.workspace_chat import run_workspace_chat
+from models.schemas import AgentChatRequest, AgentRefineRequest, AgentRunRequest, HealthResponse
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -153,6 +154,42 @@ async def agent_refine(request: AgentRefineRequest) -> StreamingResponse:
                 yield f"data: {json.dumps(event)}\n\n"
         except Exception as exc:  # noqa: BLE001
             logger.exception("Unhandled error in refine stream")
+            yield f'data: {json.dumps({"type": "error", "agent": "Pipeline", "message": str(exc)})}\n\n'
+            yield 'data: {"type": "done"}\n\n'
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
+
+@app.post("/agent/chat", tags=["Agent"])
+async def agent_chat(request: AgentChatRequest) -> StreamingResponse:
+    """
+    Unified workspace conversation endpoint.
+    Agent decides what to do based on message + context:
+    - Fresh build (no files, user describes what to build)
+    - Add feature (files exist, user wants something new)
+    - Fix bug (files exist, user reports issue)
+    - Answer question (no code change needed)
+    """
+    if not request.api_key or request.api_key.strip() == "":
+        raise HTTPException(status_code=400, detail="api_key is required.")
+
+    async def event_stream():
+        try:
+            async for event in run_workspace_chat(
+                message=request.message,
+                files=request.files,
+                history=request.history,
+                api_key=request.api_key.strip(),
+                provider=request.provider,
+            ):
+                event.pop("_full_text", None)
+                yield f"data: {json.dumps(event)}\n\n"
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Unhandled error in chat stream")
             yield f'data: {json.dumps({"type": "error", "agent": "Pipeline", "message": str(exc)})}\n\n'
             yield 'data: {"type": "done"}\n\n'
 
