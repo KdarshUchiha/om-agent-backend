@@ -91,7 +91,7 @@ class OrchestratorAgent(BaseAgent):
             yield event
 
     async def _call_om_think(self, user_message: str) -> AsyncGenerator[dict, None]:
-        """Call our Om-Think model for reasoning."""
+        """Call our Om-Think model for reasoning, with cold-start retry."""
         yield {
             "type": "agent_start",
             "agent": self.name,
@@ -111,14 +111,40 @@ class OrchestratorAgent(BaseAgent):
         }
 
         client = get_http_client()
-        response = await client.post(
-            OM_THINK_URL,
-            json=payload,
-            timeout=OM_THINK_TIMEOUT,
-        )
-        response.raise_for_status()
-        data = response.json()
+        max_retries = 2
+        for attempt in range(max_retries + 1):
+            try:
+                response = await client.post(
+                    OM_THINK_URL,
+                    json=payload,
+                    timeout=OM_THINK_TIMEOUT,
+                )
+                if response.status_code == 503 and attempt < max_retries:
+                    yield {
+                        "type": "agent_thinking",
+                        "agent": self.name,
+                        "emoji": self.emoji,
+                        "message": f"🧠 Om-Think is waking up… retry {attempt + 1}/{max_retries}",
+                    }
+                    import asyncio
+                    await asyncio.sleep(30)
+                    continue
+                response.raise_for_status()
+                break
+            except httpx.TimeoutException:
+                if attempt < max_retries:
+                    yield {
+                        "type": "agent_thinking",
+                        "agent": self.name,
+                        "emoji": self.emoji,
+                        "message": f"🧠 Om-Think cold start… retry {attempt + 1}/{max_retries}",
+                    }
+                    import asyncio
+                    await asyncio.sleep(15)
+                    continue
+                raise
 
+        data = response.json()
         full_text = data["choices"][0]["message"]["content"]
 
         yield {
