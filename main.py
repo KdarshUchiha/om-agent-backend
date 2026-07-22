@@ -79,6 +79,17 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 
 
+@app.get("/", tags=["Meta"])
+async def root() -> dict:
+    """Landing route so the Space preview shows status instead of a 404."""
+    return {
+        "service": "Om Agent Backend",
+        "status": "ok",
+        "version": "1.0.0",
+        "endpoints": ["/health", "/agent/run", "/agent/refine", "/agent/chat"],
+    }
+
+
 @app.get("/health", response_model=HealthResponse, tags=["Meta"])
 async def health() -> HealthResponse:
     """Liveness probe."""
