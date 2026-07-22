@@ -112,6 +112,31 @@ class AgentDoneEvent(SSEEventBase):
     message: str
 
 
+class VerifyStartEvent(SSEEventBase):
+    type: Literal["verify_start"] = "verify_start"
+    agent: str
+    emoji: str
+    message: str
+
+
+class VerifyResultEvent(SSEEventBase):
+    type: Literal["verify_result"] = "verify_result"
+    agent: str
+    emoji: str
+    passed: bool
+    error_count: int
+    warning_count: int
+    findings: list[dict[str, str]]
+    message: str
+
+
+class RepairStartEvent(SSEEventBase):
+    type: Literal["repair_start"] = "repair_start"
+    agent: str
+    emoji: str
+    message: str
+
+
 class FinalOutputEvent(SSEEventBase):
     type: Literal["final_output"] = "final_output"
     files: list[OutputFile]

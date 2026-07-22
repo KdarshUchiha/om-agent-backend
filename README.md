@@ -34,11 +34,38 @@ User Prompt
     └───────┬───────┘
             ▼
     ┌───────────────┐
-    │  Reviewer ✅  │  Reviews, fixes, packages final output
+    │  Reviewer ✅  │  Reviews, fixes, packages first candidate build
     └───────┬───────┘
+            ▼
+    ┌───────────────────────────────────────┐
+    │  Verify 🔎 → Repair 🔧  (loop, max 2)  │  Self-correction
+    └───────┬───────────────────────────────┘
             ▼
      Final files list
 ```
+
+### Verify → Repair loop (agentic self-correction)
+
+After the Reviewer produces a candidate build, a **deterministic verifier**
+(no LLM) statically inspects the generated HTML/JS for the failure modes
+one-shot generation commonly produces:
+
+- JavaScript syntax errors (`node --check`, with a brace-balance fallback)
+- Truncated output / leftover placeholders (`// TODO`, `...rest of code`)
+- Inline `onclick="foo()"` handlers referencing **undefined** functions
+- `getContext()` calls with no `<canvas>` element
+- Missing core HTML structure
+
+If any **error**-level finding is present, the `RepairAgent` is dispatched with
+the concrete defect list and re-emits the complete corrected file(s). The loop
+runs up to `MAX_REPAIR_ITERATIONS` (default 2) and always ships a `final_output`
+even if it cannot fully converge.
+
+**Optional upgrade — browser verification:** the current verifier is static so
+it deploys with zero extra dependencies. For runtime error capture (uncaught
+exceptions, null refs at load), add Playwright + headless Chromium and extend
+`agents/verifier.py` with a browser tier. This is intentionally left out of the
+default HF Spaces image to keep cold starts fast.
 
 ## Quick Start
 
@@ -84,6 +111,9 @@ Runs the agent pipeline and streams progress as SSE.
 | `agent_thinking` | `agent`, `emoji`, `message` | Pipeline status update |
 | `agent_output` | `agent`, `emoji`, `chunk` | Streamed text chunk |
 | `agent_done` | `agent`, `emoji`, `message` | Agent finished |
+| `verify_start` | `agent`, `emoji`, `message` | Verifier begins static checks |
+| `verify_result` | `agent`, `emoji`, `passed`, `error_count`, `warning_count`, `findings[]`, `message` | Verification outcome |
+| `repair_start` | `agent`, `emoji`, `message` | RepairAgent begins fixing defects |
 | `final_output` | `files[]`, `summary` | Complete file list |
 | `done` | — | Stream closed |
 | `error` | `agent`, `message` | Error occurred |

@@ -27,9 +27,15 @@ from .asset_artist import AssetArtistAgent
 from .coder import CoderAgent
 from .designer import DesignerAgent
 from .orchestrator import OrchestratorAgent
+from .parsing import parse_files
+from .repair import RepairAgent
 from .reviewer import ReviewerAgent
+from .verifier import verify_files
 
 logger = logging.getLogger(__name__)
+
+# Max verify→repair iterations before we give up and ship the best effort.
+MAX_REPAIR_ITERATIONS = 2
 
 
 async def run_pipeline(
@@ -143,7 +149,9 @@ async def run_pipeline(
     context["coder_output"] = coder_text
 
     # ------------------------------------------------------------------
-    # 4. Reviewer (also emits final_output)
+    # 4. Reviewer — produces the first candidate build. We intercept its
+    #    final_output so the verify→repair loop can run before the client
+    #    receives the definitive files.
     # ------------------------------------------------------------------
     yield {
         "type": "agent_thinking",
@@ -152,13 +160,111 @@ async def run_pipeline(
         "message": "Reviewing, fixing bugs, and packaging the final output…",
     }
 
+    candidate_files: list[dict] = []
+    candidate_summary = "Project completed successfully."
     async for event in reviewer.run(context, api_key, provider):
+        if event.get("type") == "final_output":
+            # Hold this back — the loop below emits the authoritative one.
+            candidate_files = event.get("files", [])
+            candidate_summary = event.get("summary", candidate_summary)
+            continue
         yield event
 
     # ------------------------------------------------------------------
-    # 5. Done
+    # 5. Verify → Repair loop (agentic self-correction)
+    # ------------------------------------------------------------------
+    async for event in _verify_repair_loop(
+        candidate_files,
+        candidate_summary,
+        user_prompt,
+        api_key,
+        provider,
+    ):
+        yield event
+
+    # ------------------------------------------------------------------
+    # 6. Done
     # ------------------------------------------------------------------
     yield {"type": "done"}
+
+
+async def _verify_repair_loop(
+    files: list[dict],
+    summary: str,
+    user_prompt: str,
+    api_key: str,
+    provider: str,
+) -> AsyncGenerator[dict, None]:
+    """Run the deterministic verifier and, if it finds errors, dispatch the
+    RepairAgent to fix them — repeating up to ``MAX_REPAIR_ITERATIONS`` times.
+
+    Emits additive SSE events (``verify_start``, ``verify_result``,
+    ``repair_start``) and finishes by yielding the authoritative
+    ``final_output`` event.
+    """
+    repair = RepairAgent()
+
+    for iteration in range(MAX_REPAIR_ITERATIONS + 1):
+        yield {
+            "type": "verify_start",
+            "agent": "Verifier",
+            "emoji": "🔎",
+            "message": "Running automated checks on the generated code…",
+        }
+
+        report = verify_files(files)
+
+        yield {
+            "type": "verify_result",
+            "agent": "Verifier",
+            "emoji": "🔎",
+            "passed": report.passed,
+            "error_count": len(report.errors),
+            "warning_count": len(report.warnings),
+            "findings": [f.to_dict() for f in report.findings],
+            "message": (
+                "All checks passed ✅"
+                if report.passed
+                else f"Found {len(report.errors)} issue(s) to fix."
+            ),
+        }
+
+        if report.passed or iteration == MAX_REPAIR_ITERATIONS:
+            break
+
+        # Dispatch the RepairAgent with the concrete defect list.
+        yield {
+            "type": "repair_start",
+            "agent": repair.name,
+            "emoji": repair.emoji,
+            "message": (
+                f"Fixing {len(report.errors)} issue(s) "
+                f"(attempt {iteration + 1}/{MAX_REPAIR_ITERATIONS})…"
+            ),
+        }
+
+        repair_context: dict[str, Any] = {
+            "user_prompt": user_prompt,
+            "current_files": files,
+            "verification_report": report.as_prompt_text(),
+        }
+
+        repair_text = ""
+        async for event in repair.run(repair_context, api_key, provider):
+            if event.get("type") == "agent_done":
+                repair_text = event.pop("_full_text", "")
+            yield event
+
+        # Parse the repaired files; if parsing fails, keep the prior candidate.
+        repaired = parse_files(repair_text)
+        if repaired:
+            files = repaired
+
+    yield {
+        "type": "final_output",
+        "files": [{"name": f["name"], "content": f["content"]} for f in files],
+        "summary": summary,
+    }
 
 
 def _is_bug_report(prompt: str) -> bool:

@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import logging
-import re
 from typing import Any, AsyncGenerator
 
 from .base import BaseAgent
+from .parsing import parse_output
 
 logger = logging.getLogger(__name__)
 
@@ -57,8 +56,8 @@ class ReviewerAgent(BaseAgent):
                 full_text = event.pop("_full_text", "")
             yield event
 
-        # Parse the reviewer's JSON output into a structured final_output event
-        files, summary = self._parse_output(full_text, context)
+        # Parse the reviewer's output into a structured final_output event.
+        files, summary = parse_output(full_text, context.get("coder_output", ""))
         yield {
             "type": "final_output",
             "files": [{"name": f["name"], "content": f["content"]} for f in files],
@@ -82,99 +81,3 @@ class ReviewerAgent(BaseAgent):
         if len(text) <= max_chars:
             return text
         return text[:max_chars] + "\n\n[...trimmed for brevity...]"
-
-    # ------------------------------------------------------------------
-    # Output parsing
-    # ------------------------------------------------------------------
-
-    def _parse_output(
-        self, raw: str, context: dict[str, Any]
-    ) -> tuple[list[dict], str]:
-        """
-        Parse the reviewer's structured output. Tries multiple patterns
-        in order of reliability, always returns something.
-        """
-        # Extract summary from SUMMARY: line
-        summary = "Project completed successfully."
-        summary_match = re.search(r"SUMMARY:\s*(.+?)(?:\n|$)", raw)
-        if summary_match:
-            summary = summary_match.group(1).strip()
-
-        # --- Strategy 1: FILE: <name> followed by fenced block (flexible whitespace) ---
-        files = self._parse_file_blocks(raw)
-        if files:
-            logger.info("Parsed %d file(s) via FILE: pattern", len(files))
-            return files, summary
-
-        # --- Strategy 2: any fenced code block in reviewer output ---
-        logger.warning("FILE: pattern miss — trying bare fenced blocks in reviewer output")
-        files = self._extract_fenced_blocks(raw)
-        if files:
-            logger.info("Parsed %d file(s) via bare fenced blocks", len(files))
-            return files, summary
-
-        # --- Strategy 3: fenced blocks from coder output ---
-        logger.warning("No fenced blocks in reviewer — falling back to coder output")
-        coder_output = context.get("coder_output", "")
-        files = self._extract_fenced_blocks(coder_output)
-        if files:
-            logger.info("Parsed %d file(s) from coder output", len(files))
-            return files, summary
-
-        # --- Strategy 4: strip markdown fences from coder output and wrap ---
-        logger.warning("Last resort — stripping fences from coder output")
-        content = re.sub(r"^```\w*\n?", "", coder_output.strip(), flags=re.MULTILINE)
-        content = re.sub(r"\n?```$", "", content, flags=re.MULTILINE)
-        if not content.strip():
-            content = raw.strip()
-        return [{"name": "index.html", "content": content}], summary
-
-    @staticmethod
-    def _parse_file_blocks(text: str) -> list[dict]:
-        """
-        Match FILE: <name> ... ```<lang>\n<content>\n``` with flexible spacing.
-        Handles cases where the LLM adds extra blank lines or varies whitespace.
-        """
-        files: list[dict] = []
-        # Split on FILE: markers first
-        # e.g.  FILE: index.html\n```html\n...\n```
-        parts = re.split(r"FILE:\s*([\w.\-/]+)", text)
-        # parts = [preamble, name1, block1, name2, block2, ...]
-        i = 1
-        while i + 1 < len(parts):
-            name = parts[i].strip()
-            block = parts[i + 1]
-            # Extract content from the first fenced block in this segment
-            fence_match = re.search(r"```[^\n]*\n([\s\S]*?)```", block)
-            if fence_match:
-                content = fence_match.group(1)
-                if content.strip():
-                    files.append({"name": name, "content": content})
-            i += 2
-        return files
-
-    @staticmethod
-    def _extract_fenced_blocks(text: str) -> list[dict]:
-        """Extract fenced code blocks, guessing filenames from language."""
-        ext_map = {
-            "html": "index.html",
-            "css": "style.css",
-            "javascript": "script.js",
-            "js": "script.js",
-            "python": "main.py",
-            "py": "main.py",
-        }
-        files: list[dict] = []
-        seen: dict[str, int] = {}
-        pattern = re.compile(r"```(\w+)?\n([\s\S]*?)```", re.MULTILINE)
-        for match in pattern.finditer(text):
-            lang = (match.group(1) or "html").lower()
-            content = match.group(2)
-            if not content.strip():
-                continue
-            base_name = ext_map.get(lang, f"file.{lang}")
-            count = seen.get(base_name, 0)
-            name = base_name if count == 0 else f"{base_name.rsplit('.', 1)[0]}_{count}.{base_name.rsplit('.', 1)[-1]}"
-            seen[base_name] = count + 1
-            files.append({"name": name, "content": content})
-        return files
