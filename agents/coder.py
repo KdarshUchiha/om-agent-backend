@@ -12,14 +12,19 @@ class CoderAgent(BaseAgent):
     emoji = "💻"
     system_prompt = (
         "You are an expert full-stack programmer. Given the architect's technical plan "
-        "and the designer's CSS, write COMPLETE, WORKING, SELF-CONTAINED code.\n\n"
+        "and the designer's CSS, write COMPLETE, WORKING, SELF-CONTAINED code for "
+        "whatever the project is — a game, a dashboard, a landing page, a tool, a "
+        "visualization. Do not assume it is a game.\n\n"
         "CRITICAL RULES:\n"
         "1. Write EVERY line of code — no placeholders, no '// TODO', no '...rest of code'.\n"
-        "2. For games and small apps: produce a SINGLE index.html file with CSS and JS "
-        "   embedded using <style> and <script> tags.\n"
-        "3. Incorporate the designer's CSS exactly (inside the <style> tag).\n"
+        "2. For small web apps: produce a SINGLE index.html file with CSS and JS "
+        "   embedded using <style> and <script> tags. Split into multiple files only "
+        "   when the architect's plan calls for it.\n"
+        "3. Incorporate the designer's CSS exactly (inside the <style> tag), and honor "
+        "   any UI requirements the user specified — layout, theme, palette, fonts.\n"
         "4. Follow the architect's data structures and function signatures precisely.\n"
-        "5. Handle edge cases: game over, empty states, invalid input, resize events.\n"
+        "5. Handle edge cases relevant to the project: empty states, invalid input, "
+        "   loading/error states, resize events, and (for games) game-over/restart.\n"
         "6. The code must run perfectly in a modern browser with zero external dependencies "
         "   (unless CDN links are appropriate, in which case include them).\n"
         "7. Output ONLY the file(s) — no explanations before or after. "
@@ -28,11 +33,12 @@ class CoderAgent(BaseAgent):
         "   ...content...\n"
         "   ```\n"
         "   If multiple files, repeat the pattern for each file.\n"
-        "8. For games: implement smooth animation (requestAnimationFrame), keyboard "
-        "   controls, score tracking, and a proper game-over/restart flow.\n"
+        "8. Make it genuinely interactive and functional — wire up every control, "
+        "   input, and state transition the project needs. For games: smooth animation "
+        "   (requestAnimationFrame), controls, scoring, and restart flow.\n"
         "9. NEVER use fake base64 image data or placeholder asset strings. "
-        "   Draw all graphics with Canvas 2D API (fillRect, arc, beginPath etc.) "
-        "   or pure CSS/SVG. No <img src='data:image/...'> with made-up content.\n"
+        "   Draw graphics with the Canvas 2D API or pure CSS/SVG, or embed the Asset "
+        "   Artist's SVGs. No <img src='data:image/...'> with made-up content.\n"
         "10. NEVER truncate the output. The file must be 100% complete and runnable as-is."
     )
 
@@ -50,13 +56,16 @@ class CoderAgent(BaseAgent):
             f"## Designer's CSS & Styles\n{designer_css}\n\n"
         )
 
-        if assets:
+        # The Asset Artist emits "NO_ASSETS_NEEDED" for projects that need no
+        # custom artwork (dashboards, forms, text tools). Only wire in the
+        # sprite-embedding instructions when real assets were actually produced.
+        has_assets = bool(assets) and "NO_ASSETS_NEEDED" not in assets
+        if has_assets:
             prompt += (
-                f"## Asset Artist's SVG Sprites & Graphics\n{assets}\n\n"
-                "IMPORTANT: Use the SVG assets above as inline data URIs for <img> tags or "
-                "draw them onto the Canvas. Embed each SVG as:\n"
-                "  const spriteUrl = `data:image/svg+xml,${encodeURIComponent(svgString)}`;\n"
-                "  or use new Image() with src set to the data URI.\n"
+                f"## Asset Artist's SVG Assets\n{assets}\n\n"
+                "IMPORTANT: Use the SVG assets above — inline them directly in the HTML, "
+                "reference them as data URIs for <img> tags, or draw them onto a Canvas:\n"
+                "  const url = `data:image/svg+xml,${encodeURIComponent(svgString)}`;\n"
                 "Use EVERY asset the artist created — they are designed for this project.\n\n"
             )
 

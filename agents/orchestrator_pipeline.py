@@ -26,10 +26,13 @@ from .architect import ArchitectAgent
 from .asset_artist import AssetArtistAgent
 from .coder import CoderAgent
 from .designer import DesignerAgent
+from .diffing import apply_edits, parse_edit_blocks
+from .editor import EditorAgent
 from .orchestrator import OrchestratorAgent
 from .parsing import parse_files
 from .repair import RepairAgent
 from .reviewer import ReviewerAgent
+from .runtime_sandbox import run_runtime_checks
 from .verifier import verify_files
 
 logger = logging.getLogger(__name__)
@@ -214,6 +217,20 @@ async def _verify_repair_loop(
 
         report = verify_files(files)
 
+        # Runtime pass: only worth executing the code if it is statically sound
+        # (no syntax errors / truncation). Runtime findings merge into the same
+        # report so a single repair pass addresses both static and runtime bugs.
+        if report.passed:
+            runtime_findings = run_runtime_checks(files)
+            if runtime_findings:
+                yield {
+                    "type": "agent_thinking",
+                    "agent": "Sandbox",
+                    "emoji": "🧪",
+                    "message": f"Runtime check found {len(runtime_findings)} issue(s) on load.",
+                }
+                report.findings.extend(runtime_findings)
+
         yield {
             "type": "verify_result",
             "agent": "Verifier",
@@ -267,6 +284,74 @@ async def _verify_repair_loop(
     }
 
 
+async def _apply_fix_with_edits(
+    refinement_prompt: str,
+    debugger_text: str,
+    current_files: list[dict],
+    api_key: str,
+    provider: str,
+) -> AsyncGenerator[dict, None]:
+    """Attempt a surgical, diff-based fix via the EditorAgent.
+
+    Streams the Editor's normal SSE events through, then verifies that the
+    emitted search/replace blocks apply cleanly. On success, yields a private
+    ``_edit_result`` event carrying the patched files (the caller consumes it
+    and does not forward it to the client). On any failure — no blocks parsed,
+    or a block that doesn't apply — yields nothing extra, signalling the caller
+    to fall back to a full rewrite.
+    """
+    editor = EditorAgent()
+
+    yield {
+        "type": "agent_thinking",
+        "agent": editor.name,
+        "emoji": editor.emoji,
+        "message": "Preparing a targeted edit…",
+    }
+
+    edit_context: dict[str, Any] = {
+        "edit_instruction": (
+            f"## User's Bug Report\n{refinement_prompt}\n\n"
+            f"## Debugger's Diagnosis\n{debugger_text}\n\n"
+            "Apply the fix described above as minimal search/replace edits."
+        ),
+        "current_files": current_files,
+    }
+
+    editor_text = ""
+    async for event in editor.run(edit_context, api_key, provider):
+        if event.get("type") == "agent_done":
+            editor_text = event.pop("_full_text", "")
+        yield event
+
+    blocks = parse_edit_blocks(editor_text)
+    if not blocks:
+        logger.info("Editor produced no edit blocks — falling back to full rewrite")
+        return
+
+    result = apply_edits(current_files, blocks)
+    if not result.all_applied:
+        logger.info(
+            "Diff apply incomplete (%d applied, %d failed: %s) — falling back",
+            result.applied, len(result.failed), "; ".join(result.failed),
+        )
+        yield {
+            "type": "agent_thinking",
+            "agent": editor.name,
+            "emoji": editor.emoji,
+            "message": "Targeted edit didn't apply cleanly — switching to full rewrite…",
+        }
+        return
+
+    yield {
+        "type": "agent_thinking",
+        "agent": editor.name,
+        "emoji": editor.emoji,
+        "message": f"Applied {result.applied} targeted edit(s) cleanly ✅",
+    }
+    yield {"type": "_edit_result", "files": result.files}
+
+
 def _is_bug_report(prompt: str) -> bool:
     """Detect if the user is reporting a bug vs requesting a feature."""
     bug_keywords = [
@@ -289,7 +374,10 @@ async def run_refine_pipeline(
 ) -> AsyncGenerator[dict, None]:
     """
     Smart refine pipeline:
-    - If user reports a BUG: Debugger diagnoses → Coder fixes → Reviewer validates
+    - If user reports a BUG: Debugger diagnoses → Editor applies a surgical
+      diff-based fix → (fallback) Coder full-rewrite → Reviewer validates.
+      The Editor emits search/replace blocks that are applied deterministically;
+      only if they don't apply cleanly do we fall back to a full rewrite.
     - If user requests a FEATURE: Full 6-agent pipeline with context
     """
     from .debugger import DebuggerAgent
@@ -322,7 +410,28 @@ async def run_refine_pipeline(
                 debugger_text = event.pop("_full_text", "")
             yield event
 
-        # Step 2: Coder applies the fix (with debugger's diagnosis as context)
+        # Step 2: Apply the fix. Try surgical edits first (fast, no
+        # regressions); fall back to a full Coder rewrite if they don't apply.
+        fixed_files, coder_text = None, ""
+        async for event in _apply_fix_with_edits(
+            refinement_prompt, debugger_text, current_files, api_key, provider
+        ):
+            if event.get("type") == "_edit_result":
+                fixed_files = event.get("files")
+                continue
+            yield event
+
+        if fixed_files is not None:
+            # Surgical edits applied cleanly — emit the final output directly.
+            yield {
+                "type": "final_output",
+                "files": [{"name": f["name"], "content": f["content"]} for f in fixed_files],
+                "summary": "Applied a targeted fix for the reported issue.",
+            }
+            yield {"type": "done"}
+            return
+
+        # Fallback: full-rewrite path (Coder → Reviewer), as before.
         files_text = ""
         for f in current_files:
             name = f.get("name", "file")
@@ -348,7 +457,7 @@ async def run_refine_pipeline(
             "type": "agent_thinking",
             "agent": coder.name,
             "emoji": coder.emoji,
-            "message": "Applying the fix…",
+            "message": "Applying the fix (full rewrite)…",
         }
 
         coder_text = ""
