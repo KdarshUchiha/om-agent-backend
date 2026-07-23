@@ -97,11 +97,26 @@ Runs the agent pipeline and streams progress as SSE.
 }
 ```
 
-**Providers:**
+**Providers** (the user's own key — always the guaranteed fallback floor):
 | Provider | Model | Free tier |
 |---|---|---|
 | `gemini` | `gemini-2.5-flash` | Yes — get key at [aistudio.google.com](https://aistudio.google.com) |
 | `groq` | `llama-3.3-70b-versatile` | Yes — get key at [console.groq.com](https://console.groq.com) |
+
+### Model router (backend selection)
+
+`agents/router.py` picks an ordered backend chain per agent — Om (style layer)
+and frontier models (the brains) — and `BaseAgent` streams from the first that
+works, falling back down the chain. Configured via env vars:
+
+| Env var | Default | Effect |
+|---|---|---|
+| `OM_ROUTER_MODE` | `hybrid` | `frontier` (brains + style → frontier, Om last), `hybrid` (brains → frontier; style/chat → Om first), `om` (Om first everywhere) |
+| `ANTHROPIC_API_KEY` | *(unset)* | When set, Claude joins the frontier tier ahead of the user's provider. Unset → fully backward-compatible (provider + Om only). |
+| `ANTHROPIC_MODEL` | `claude-opus-4-8` | Claude model ID used when routed to Claude (adaptive thinking, streamed). |
+
+The user's `provider` key is always present in every chain, so a request never
+hard-fails because a preferred backend is down.
 
 **SSE event types:**
 
@@ -135,12 +150,17 @@ om-agent-backend/
 ├── main.py                        # FastAPI app, CORS, /health, /agent/run
 ├── agents/
 │   ├── __init__.py
-│   ├── base.py                    # BaseAgent — Gemini & Groq streaming
+│   ├── base.py                    # BaseAgent — multi-backend streaming + fallback
+│   ├── router.py                  # Model router (Claude/Gemini/Groq/Om) per agent
 │   ├── orchestrator.py            # OrchestratorAgent
 │   ├── architect.py               # ArchitectAgent
 │   ├── designer.py                # DesignerAgent
 │   ├── coder.py                   # CoderAgent
+│   ├── editor.py                  # EditorAgent (surgical diff edits)
+│   ├── diffing.py                 # Deterministic search/replace engine
 │   ├── reviewer.py                # ReviewerAgent + output parser
+│   ├── verifier.py                # Static verifier (no LLM)
+│   ├── runtime_sandbox.py         # Runtime verifier (executes JS via Node)
 │   └── orchestrator_pipeline.py  # Pipeline wiring (parallel execution)
 ├── models/
 │   ├── __init__.py
